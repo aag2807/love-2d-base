@@ -1,5 +1,5 @@
-local Vector2D = require("vector2d")
-local Rectangle = require("rectangle")
+local Vector2D = require "lib.structure.vector2d"
+local Rectangle = require "lib.structure.rectangle"
 
 local Circle = {}
 Circle.__index = Circle
@@ -63,14 +63,6 @@ function Circle:intersectsCircle(other)
     assert(isCircle(other), "Can only check intersection with another circle")
     local distance = self.position:distance(other.position)
     return distance <= (self.radius + other.radius)
-end
-
-function Circle:intersectsRectangle(rect)
-    assert(rect.__name == "Rectangle", "Can only check intersection with a Rectangle")
-    -- Find the closest point to the circle within the rectangle
-    local closest = rect:getNearestPoint(self.position)
-    -- If the closest point is inside the circle, the rectangle intersects
-    return self:contains(closest)
 end
 
 function Circle:getIntersectionPoints(other)
@@ -193,15 +185,160 @@ function Circle:drawDebug()
         -- Draw center point
         love.graphics.points(self.position.x, self.position.y)
         
-        -- Draw radius line
+        -- Draw diameter lines
         love.graphics.line(
-            self.position.x, self.position.y,
+            self.position.x - self.radius, self.position.y,
             self.position.x + self.radius, self.position.y
+        )
+        love.graphics.line(
+            self.position.x, self.position.y - self.radius,
+            self.position.x, self.position.y + self.radius
         )
         
         -- Draw bounding box
         local bbox = self:getBoundingBox()
         bbox:draw("line")
+        
+        -- Draw inscribed square
+        local inscribed = self:getInscribedSquare()
+        inscribed:draw("line")
+    end
+end
+
+-- Get intersection area between two circles
+function Circle:getIntersectionArea(other)
+    assert(isCircle(other), "Can only get intersection area with another circle")
+    local d = self.position:distance(other.position)
+    
+    -- If circles don't intersect or one contains the other
+    if d >= self.radius + other.radius then return 0 end
+    if d <= math.abs(self.radius - other.radius) then
+        local r = math.min(self.radius, other.radius)
+        return math.pi * r * r
+    end
+    
+    -- Formula for intersection area of two circles
+    local a = math.acos((d * d + self.radius * self.radius - other.radius * other.radius) 
+                       / (2 * d * self.radius))
+    local b = math.acos((d * d + other.radius * other.radius - self.radius * self.radius) 
+                       / (2 * d * other.radius))
+    
+    return self.radius * self.radius * a + other.radius * other.radius * b - 
+           d * self.radius * math.sin(a)
+end
+
+-- Get overlap percentage with another circle (0-1)
+function Circle:getOverlapPercentage(other)
+    local intersectArea = self:getIntersectionArea(other)
+    local smallerArea = math.min(self:getArea(), other:getArea())
+    return intersectArea / smallerArea
+end
+
+-- Get external tangent points between two circles
+function Circle:getExternalTangentPoints(other)
+    assert(isCircle(other), "Can only get tangent points with another circle")
+    local d = self.position:distance(other.position)
+    
+    -- If circles overlap or are coincident
+    if d <= math.abs(self.radius + other.radius) then return nil end
+    
+    local theta = math.acos((self.radius + other.radius) / d)
+    local baseAngle = math.atan2(other.position.y - self.position.y, 
+                                other.position.x - self.position.x)
+    
+    return {
+        -- Points on this circle
+        {
+            self:getPointOnCircle(baseAngle + theta),
+            self:getPointOnCircle(baseAngle - theta)
+        },
+        -- Points on other circle
+        {
+            other:getPointOnCircle(baseAngle + theta),
+            other:getPointOnCircle(baseAngle - theta)
+        }
+    }
+end
+
+-- Check if this circle contains another circle entirely
+function Circle:containsCircle(other)
+    assert(isCircle(other), "Can only check containment of another circle")
+    local distance = self.position:distance(other.position)
+    return distance + other.radius <= self.radius
+end
+
+-- Get inscribed square
+function Circle:getInscribedSquare()
+    local size = self.radius * math.sqrt(2)
+    return Rectangle.new(
+        self.position.x - size/2,
+        self.position.y - size/2,
+        size,
+        size
+    )
+end
+
+-- Get circumscribed square (same as bounding box but with different name for clarity)
+function Circle:getCircumscribedSquare()
+    return self:getBoundingBox()
+end
+
+-- More precise rectangle intersection test
+function Circle:intersectsRectangle(rect)
+    assert(rect.__name == "Rectangle", "Can only check intersection with a Rectangle")
+    
+    -- First quick test with bounding box
+    if not self:getBoundingBox():intersects(rect) then
+        return false
+    end
+    
+    -- Test corners
+    local corners = rect:getCorners()
+    for _, corner in pairs(corners) do
+        if self:contains(corner) then
+            return true
+        end
+    end
+    
+    -- Test edges
+    local dx = math.max(rect.x - self.position.x, 0, self.position.x - (rect.x + rect.width))
+    local dy = math.max(rect.y - self.position.y, 0, self.position.y - (rect.y + rect.height))
+    return (dx * dx + dy * dy) <= (self.radius * self.radius)
+end
+
+-- Create circle from three points
+function Circle.fromThreePoints(p1, p2, p3)
+    -- Calculate circle parameters from three points using circumcenter formula
+    local d = 2 * (p1.x * (p2.y - p3.y) + p2.x * (p3.y - p1.y) + p3.x * (p1.y - p2.y))
+    if math.abs(d) < 1e-10 then return nil end -- Points are collinear
+    
+    local ux = ((p1.x * p1.x + p1.y * p1.y) * (p2.y - p3.y) + 
+                (p2.x * p2.x + p2.y * p2.y) * (p3.y - p1.y) +
+                (p3.x * p3.x + p3.y * p3.y) * (p1.y - p2.y)) / d
+    local uy = ((p1.x * p1.x + p1.y * p1.y) * (p3.x - p2.x) + 
+                (p2.x * p2.x + p2.y * p2.y) * (p1.x - p3.x) +
+                (p3.x * p3.x + p3.y * p3.y) * (p2.x - p1.x)) / d
+    
+    local center = Vector2D.new(ux, uy)
+    local radius = center:distance(p1)
+    return Circle.new(center, radius)
+end
+
+-- Test if point is in the circle's arc between two angles
+function Circle:isPointInArc(point, startAngle, endAngle)
+    if not self:isOnCircumference(point) then
+        return false
+    end
+    
+    local angle = math.atan2(point.y - self.position.y, point.x - self.position.x)
+    if angle < 0 then angle = angle + 2 * math.pi end
+    if startAngle < 0 then startAngle = startAngle + 2 * math.pi end
+    if endAngle < 0 then endAngle = endAngle + 2 * math.pi end
+    
+    if startAngle <= endAngle then
+        return angle >= startAngle and angle <= endAngle
+    else
+        return angle >= startAngle or angle <= endAngle
     end
 end
 
